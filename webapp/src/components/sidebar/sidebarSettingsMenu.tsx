@@ -13,6 +13,8 @@ import {
     lightThemeName,
     setTheme, systemThemeName,
     Theme,
+    wecodeTheme,
+    weCodeThemeName,
 } from '../../theme'
 import Menu from '../../widgets/menu'
 import MenuWrapper from '../../widgets/menuWrapper'
@@ -125,6 +127,11 @@ const SidebarSettingsMenu = React.memo((props: Props) => {
             id: systemThemeName,
             displayName: 'System theme',
             theme: null,
+        },
+        {
+            id: weCodeThemeName,
+            displayName: 'WeCode A/S theme',
+            theme: wecodeTheme,
         },
     ]
 

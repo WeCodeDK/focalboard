@@ -41,14 +41,14 @@ export const systemThemeName = 'system-theme'
 export const defaultThemeName = 'default-theme'
 
 export const defaultTheme = {
-    mainBg: '255, 255, 255',
+    mainBg: '236, 236, 236',
     mainFg: '55, 53, 47',
-    buttonBg: '22, 109, 224',
+    buttonBg: '0, 0, 0',
     buttonFg: '255, 255, 255',
-    sidebarBg: '20, 93, 191',
-    sidebarFg: '255, 255, 255',
-    sidebarTextActiveBorder: '#579eff',
-    sidebarWhiteLogo: 'true',
+    sidebarBg: '247, 246, 243',
+    sidebarFg: '55, 53, 47',
+    sidebarTextActiveBorder: '0,0,0',
+    sidebarWhiteLogo: 'false',
 
     link: '#0000ee',
     linkVisited: '#551a8b',
@@ -107,6 +107,34 @@ export const lightTheme = {
     sidebarFg: '55, 53, 47',
     sidebarTextActiveBorder: '#579eff',
     sidebarWhiteLogo: 'false',
+}
+
+export const weCodeThemeName = 'wecode-theme'
+
+export const wecodeTheme = {
+    ...defaultTheme,
+    mainBg: '236, 236, 236',
+    mainFg: '55, 53, 47',
+    buttonBg: '0, 0, 0',
+    buttonFg: '255, 255, 255',
+    sidebarBg: '247, 246, 243',
+    sidebarFg: '55, 53, 47',
+    sidebarTextActiveBorder: '0,0,0',
+    sidebarWhiteLogo: 'false',
+
+    link: '#0000ee',
+    linkVisited: '#551a8b',
+
+    propDefault: '#fff',
+    propGray: '#EDEDED',
+    propBrown: '#F7DDC3',
+    propOrange: '#ffd3c1',
+    propYellow: '#f7f0b6',
+    propGreen: '#c7eac3',
+    propBlue: '#B1D1F6',
+    propPurple: '#e6d0ff',
+    propPink: '#ffd6e9',
+    propRed: '#ffa9a9',
 }
 
 export function setTheme(theme: Theme | null): Theme {
@@ -201,6 +229,8 @@ function setActiveThemeName(consolidatedTheme: Theme, theme: Theme | null) {
         activeThemeName = darkThemeName
     } else if (isEqual(consolidatedTheme, lightTheme)) {
         activeThemeName = lightThemeName
+    } else if (isEqual(consolidatedTheme, wecodeTheme)) {
+        activeThemeName = weCodeThemeName
     } else {
         activeThemeName = defaultThemeName
     }
