@@ -841,6 +841,23 @@ exports[`components/sidebar/SidebarSettingsMenu theme menu open should match sna
                         class="noicon"
                       />
                     </div>
+                    <div
+                      aria-label="WeCode A/S theme"
+                      class="MenuOption TextOption menu-option"
+                      role="button"
+                    >
+                      <div
+                        class="noicon"
+                      />
+                      <div
+                        class="menu-name"
+                      >
+                        WeCode A/S theme
+                      </div>
+                      <div
+                        class="noicon"
+                      />
+                    </div>
                   </div>
                   <div
                     class="menu-spacer hideOnWidescreen"
