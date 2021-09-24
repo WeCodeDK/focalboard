@@ -2,13 +2,20 @@ package sqlstore
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"time"
 
 	"github.com/mattermost/focalboard/server/model"
-	"github.com/mattermost/focalboard/server/services/mlog"
 	"github.com/mattermost/focalboard/server/utils"
 
+	"github.com/mattermost/mattermost-server/v6/shared/mlog"
+
 	sq "github.com/Masterminds/squirrel"
+)
+
+var (
+	errUnsupportedOperation = errors.New("unsupported operation")
 )
 
 func (s *SQLStore) UpsertWorkspaceSignupToken(workspace model.Workspace) error {
@@ -33,7 +40,7 @@ func (s *SQLStore) UpsertWorkspaceSignupToken(workspace model.Workspace) error {
 			workspace.SignupToken, workspace.ModifiedBy, now)
 	} else {
 		query = query.Suffix(
-			`ON CONFLICT (id) 
+			`ON CONFLICT (id)
 			 DO UPDATE SET signup_token = EXCLUDED.signup_token, modified_by = EXCLUDED.modified_by, update_at = EXCLUDED.update_at`,
 		)
 	}
@@ -71,7 +78,7 @@ func (s *SQLStore) UpsertWorkspaceSettings(workspace model.Workspace) error {
 		query = query.Suffix("ON DUPLICATE KEY UPDATE settings = ?, modified_by = ?, update_at = ?", settingsJSON, workspace.ModifiedBy, now)
 	} else {
 		query = query.Suffix(
-			`ON CONFLICT (id) 
+			`ON CONFLICT (id)
 			 DO UPDATE SET settings = EXCLUDED.settings, modified_by = EXCLUDED.modified_by, update_at = EXCLUDED.update_at`,
 		)
 	}
@@ -143,4 +150,8 @@ func (s *SQLStore) GetWorkspaceCount() (int64, error) {
 		return 0, err
 	}
 	return count, nil
+}
+
+func (s *SQLStore) GetUserWorkspaces(userID string) ([]model.UserWorkspace, error) {
+	return nil, fmt.Errorf("GetUserWorkspaces %w", errUnsupportedOperation)
 }

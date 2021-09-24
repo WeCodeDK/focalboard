@@ -1,9 +1,14 @@
-.focalboard-body .Menu {
+.status-dropdown-menu {
+    > .Menu {
+        position: inherit;
+    }
+}
+
+.Menu {
     display: flex;
     flex-direction: column;
     position: absolute;
     z-index: 15;
-    min-width: 180px;
     background-color: rgb(var(--center-channel-bg-rgb));
     color: rgb(var(--center-channel-color-rgb));
     border-radius: var(--default-rad);
@@ -93,8 +98,8 @@
     }
 }
 
-.focalboard-body .Menu,
-.focalboard-body .SubMenuOption .SubMenu {
+.Menu,
+.SubMenuOption .SubMenu {
     @media screen and (max-width: 430px) {
         position: fixed;
         top: 0;

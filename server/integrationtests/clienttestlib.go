@@ -8,7 +8,8 @@ import (
 	"github.com/mattermost/focalboard/server/client"
 	"github.com/mattermost/focalboard/server/server"
 	"github.com/mattermost/focalboard/server/services/config"
-	"github.com/mattermost/focalboard/server/services/mlog"
+
+	"github.com/mattermost/mattermost-server/v6/shared/mlog"
 )
 
 type TestHelper struct {
@@ -65,8 +66,8 @@ func getTestConfig() *config.Configuration {
 }
 
 func newTestServer(singleUserToken string) *server.Server {
-	logger := mlog.NewLogger()
-	if err := logger.Configure("", getTestConfig().LoggingCfgJSON); err != nil {
+	logger, _ := mlog.NewLogger()
+	if err := logger.Configure("", getTestConfig().LoggingCfgJSON, nil); err != nil {
 		panic(err)
 	}
 	cfg := getTestConfig()
@@ -74,7 +75,15 @@ func newTestServer(singleUserToken string) *server.Server {
 	if err != nil {
 		panic(err)
 	}
-	srv, err := server.New(cfg, singleUserToken, db, logger, "")
+
+	params := server.Params{
+		Cfg:             cfg,
+		SingleUserToken: singleUserToken,
+		DBStore:         db,
+		Logger:          logger,
+	}
+
+	srv, err := server.New(params)
 	if err != nil {
 		panic(err)
 	}

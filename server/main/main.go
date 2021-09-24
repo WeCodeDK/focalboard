@@ -39,7 +39,7 @@ import (
 	"github.com/mattermost/focalboard/server/services/config"
 )
 import (
-	"github.com/mattermost/focalboard/server/services/mlog"
+	"github.com/mattermost/mattermost-server/v6/shared/mlog"
 )
 
 // Active server used with shared code (dll)
@@ -94,13 +94,13 @@ func main() {
 		return
 	}
 
-	logger := mlog.NewLogger()
+	logger, _ := mlog.NewLogger()
 	cfgJSON := config.LoggingCfgJSON
 	if config.LoggingCfgFile == "" && cfgJSON == "" {
 		// if no logging defined, use default config (console output)
 		cfgJSON = defaultLoggingConfig()
 	}
-	err = logger.Configure(config.LoggingCfgFile, cfgJSON)
+	err = logger.Configure(config.LoggingCfgFile, cfgJSON, nil)
 	if err != nil {
 		log.Fatal("Error in config file for logger: ", err)
 		return
@@ -108,7 +108,7 @@ func main() {
 	defer func() { _ = logger.Shutdown() }()
 
 	if logger.HasTargets() {
-		restore := logger.RedirectStdLog(mlog.Info, mlog.String("src", "stdlog"))
+		restore := logger.RedirectStdLog(mlog.LvlInfo, mlog.String("src", "stdlog"))
 		defer restore()
 	}
 
@@ -165,7 +165,14 @@ func main() {
 		logger.Fatal("server.NewStore ERROR", mlog.Err(err))
 	}
 
-	server, err := server.New(config, singleUserToken, db, logger, "")
+	params := server.Params{
+		Cfg:             config,
+		SingleUserToken: singleUserToken,
+		DBStore:         db,
+		Logger:          logger,
+	}
+
+	server, err := server.New(params)
 	if err != nil {
 		logger.Fatal("server.New ERROR", mlog.Err(err))
 	}
@@ -215,8 +222,8 @@ func startServer(webPath string, filesPath string, port int, singleUserToken, db
 		return
 	}
 
-	logger := mlog.NewLogger()
-	err = logger.Configure(config.LoggingCfgFile, config.LoggingCfgJSON)
+	logger, _ := mlog.NewLogger()
+	err = logger.Configure(config.LoggingCfgFile, config.LoggingCfgJSON, nil)
 	if err != nil {
 		log.Fatal("Error in config file for logger: ", err)
 		return
@@ -245,7 +252,14 @@ func startServer(webPath string, filesPath string, port int, singleUserToken, db
 		logger.Fatal("server.NewStore ERROR", mlog.Err(err))
 	}
 
-	pServer, err = server.New(config, singleUserToken, db, logger, "")
+	params := server.Params{
+		Cfg:             config,
+		SingleUserToken: singleUserToken,
+		DBStore:         db,
+		Logger:          logger,
+	}
+
+	pServer, err = server.New(params)
 	if err != nil {
 		logger.Fatal("server.New ERROR", mlog.Err(err))
 	}

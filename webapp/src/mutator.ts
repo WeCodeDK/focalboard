@@ -367,6 +367,13 @@ class Mutator {
     }
 
     async changePropertyValue(card: Card, propertyId: string, value?: string | string[], description = 'change property') {
+        const oldValue = card.fields.properties[propertyId]
+
+        // dont save anything if property value was not changed.
+        if (oldValue === value) {
+            return
+        }
+
         const newCard = createCard(card)
         if (value) {
             newCard.fields.properties[propertyId] = value
@@ -638,7 +645,7 @@ class Mutator {
         beforeUndo?: () => Promise<void>,
     ): Promise<[Block[], string]> {
         const rootClient = new OctoClient(octoClient.serverUrl, '0')
-        const blocks = await rootClient.getSubtree(boardId, 3)
+        const blocks = await rootClient.getSubtree(boardId, 3, '0')
         const [newBlocks1, newBoard] = OctoUtils.duplicateBlockTree(blocks, boardId) as [Block[], Board, Record<string, string>]
         const newBlocks = newBlocks1.filter((o) => o.type !== 'comment')
         Utils.log(`duplicateBoard: duplicating ${newBlocks.length} blocks`)

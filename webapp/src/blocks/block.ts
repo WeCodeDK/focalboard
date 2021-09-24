@@ -9,6 +9,7 @@ type ContentBlockTypes = typeof contentBlockTypes[number]
 type BlockTypes = typeof blockTypes[number]
 
 interface BlockPatch {
+    workspaceId?: string
     parentId?: string
     rootId?: string
     schema?: number
@@ -18,8 +19,10 @@ interface BlockPatch {
     deletedFields?: string[]
     deleteAt?: number
 }
+
 interface Block {
     id: string
+    workspaceId: string
     parentId: string
     rootId: string
     createdBy: string
@@ -40,6 +43,7 @@ function createBlock(block?: Block): Block {
     return {
         id: block?.id || Utils.createGuid(),
         schema: 1,
+        workspaceId: block?.workspaceId || '',
         parentId: block?.parentId || '',
         rootId: block?.rootId || '',
         createdBy: block?.createdBy || '',

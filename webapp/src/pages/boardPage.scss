@@ -1,4 +1,4 @@
-.focalboard-body .BoardPage {
+.BoardPage {
     > .error {
         background-color: rgba(230, 192, 192, 0.9);
         text-align: center;
@@ -14,4 +14,9 @@
     > .WSConnection.error {
         background-color: rgba(230, 192, 192, 0.9);
     }
+}
+
+.Dialog.dialog-back.workspaceSwitcherModal > div > .dialog {
+    width: 600px;
+    height: 468px;
 }

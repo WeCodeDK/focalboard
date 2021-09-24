@@ -6,17 +6,20 @@ import (
 	"path"
 	"sync"
 
+	"github.com/mattermost/focalboard/server/auth"
 	"github.com/mattermost/focalboard/server/server"
 	"github.com/mattermost/focalboard/server/services/config"
-	"github.com/mattermost/focalboard/server/services/mlog"
+	"github.com/mattermost/focalboard/server/services/notify"
 	"github.com/mattermost/focalboard/server/services/store"
 	"github.com/mattermost/focalboard/server/services/store/mattermostauthlayer"
 	"github.com/mattermost/focalboard/server/services/store/sqlstore"
+	"github.com/mattermost/focalboard/server/ws"
 
 	pluginapi "github.com/mattermost/mattermost-plugin-api"
 
-	"github.com/mattermost/mattermost-server/v5/model"
-	"github.com/mattermost/mattermost-server/v5/plugin"
+	mmModel "github.com/mattermost/mattermost-server/v6/model"
+	"github.com/mattermost/mattermost-server/v6/plugin"
+	"github.com/mattermost/mattermost-server/v6/shared/mlog"
 )
 
 // Plugin implements the interface expected by the Mattermost server to communicate between the server and plugin processes.
@@ -30,30 +33,8 @@ type Plugin struct {
 	// setConfiguration for usage.
 	configuration *configuration
 
-	server *server.Server
-	wsHub  *WSHub
-}
-
-type WSHub struct {
-	API             plugin.API
-	handleWSMessage func(data []byte)
-}
-
-func (h *WSHub) SendWSMessage(data []byte) {
-	err := h.API.PublishPluginClusterEvent(model.PluginClusterEvent{
-		Id:   "websocket_event",
-		Data: data,
-	}, model.PluginClusterEventSendOptions{
-		SendType: model.PluginClusterEventSendTypeReliable,
-	})
-
-	if err != nil {
-		h.API.LogError("Error sending websocket message", map[string]interface{}{"err": err})
-	}
-}
-
-func (h *WSHub) SetReceiveWSMessage(handler func(data []byte)) {
-	h.handleWSMessage = handler
+	server          *server.Server
+	wsPluginAdapter ws.PluginAdapterInterface
 }
 
 func (p *Plugin) OnActivate() error {
@@ -90,17 +71,21 @@ func (p *Plugin) OnActivate() error {
 		filesS3Config.Trace = *mmconfig.FileSettings.AmazonS3Trace
 	}
 
-	logger := mlog.NewLogger()
-	cfgJSON := defaultLoggingConfig()
-	err := logger.Configure("", cfgJSON)
-	if err != nil {
-		return err
-	}
-
 	client := pluginapi.NewClient(p.API, p.Driver)
 	sqlDB, err := client.Store.GetMasterDB()
 	if err != nil {
 		return fmt.Errorf("error initializing the DB: %w", err)
+	}
+
+	logger, _ := mlog.NewLogger()
+	pluginTargetFactory := newPluginTargetFactory(&client.Log)
+	factories := &mlog.Factories{
+		TargetFactory: pluginTargetFactory.createTarget,
+	}
+	cfgJSON := defaultLoggingConfig()
+	err = logger.Configure("", cfgJSON, factories)
+	if err != nil {
+		return err
 	}
 
 	baseURL := ""
@@ -108,29 +93,43 @@ func (p *Plugin) OnActivate() error {
 		baseURL = *mmconfig.ServiceSettings.SiteURL
 	}
 
+	serverID := client.System.GetDiagnosticID()
+
+	enableTelemetry := false
+	if mmconfig.LogSettings.EnableDiagnostics != nil {
+		enableTelemetry = *mmconfig.LogSettings.EnableDiagnostics
+	}
+
+	enablePublicSharedBoards := false
+	if mmconfig.PluginSettings.Plugins["focalboard"]["enablepublicsharedboards"] == true {
+		enablePublicSharedBoards = true
+	}
+
 	cfg := &config.Configuration{
-		ServerRoot:              baseURL + "/plugins/focalboard",
-		Port:                    -1,
-		DBType:                  *mmconfig.SqlSettings.DriverName,
-		DBConfigString:          *mmconfig.SqlSettings.DataSource,
-		DBTablePrefix:           "focalboard_",
-		UseSSL:                  false,
-		SecureCookie:            true,
-		WebPath:                 path.Join(*mmconfig.PluginSettings.Directory, "focalboard", "pack"),
-		FilesDriver:             *mmconfig.FileSettings.DriverName,
-		FilesPath:               *mmconfig.FileSettings.Directory,
-		FilesS3Config:           filesS3Config,
-		Telemetry:               true,
-		WebhookUpdate:           []string{},
-		SessionExpireTime:       2592000,
-		SessionRefreshTime:      18000,
-		LocalOnly:               false,
-		EnableLocalMode:         false,
-		LocalModeSocketLocation: "",
-		AuthMode:                "mattermost",
+		ServerRoot:               baseURL + "/plugins/focalboard",
+		Port:                     -1,
+		DBType:                   *mmconfig.SqlSettings.DriverName,
+		DBConfigString:           *mmconfig.SqlSettings.DataSource,
+		DBTablePrefix:            "focalboard_",
+		UseSSL:                   false,
+		SecureCookie:             true,
+		WebPath:                  path.Join(*mmconfig.PluginSettings.Directory, "focalboard", "pack"),
+		FilesDriver:              *mmconfig.FileSettings.DriverName,
+		FilesPath:                *mmconfig.FileSettings.Directory,
+		FilesS3Config:            filesS3Config,
+		Telemetry:                enableTelemetry,
+		TelemetryID:              serverID,
+		WebhookUpdate:            []string{},
+		SessionExpireTime:        2592000,
+		SessionRefreshTime:       18000,
+		LocalOnly:                false,
+		EnableLocalMode:          false,
+		LocalModeSocketLocation:  "",
+		AuthMode:                 "mattermost",
+		EnablePublicSharedBoards: enablePublicSharedBoards,
 	}
 	var db store.Store
-	db, err = sqlstore.New(cfg.DBType, cfg.DBConfigString, cfg.DBTablePrefix, logger, sqlDB)
+	db, err = sqlstore.New(cfg.DBType, cfg.DBConfigString, cfg.DBTablePrefix, logger, sqlDB, true)
 	if err != nil {
 		return fmt.Errorf("error initializing the DB: %w", err)
 	}
@@ -142,28 +141,51 @@ func (p *Plugin) OnActivate() error {
 		db = layeredStore
 	}
 
-	serverID := client.System.GetDiagnosticID()
+	p.wsPluginAdapter = ws.NewPluginAdapter(p.API, auth.New(cfg, db))
 
-	server, err := server.New(cfg, "", db, logger, serverID)
+	mentionsBackend, err := createMentionsNotifyBackend(client, cfg.ServerRoot, logger)
+	if err != nil {
+		return fmt.Errorf("error creating mentions notifications backend: %w", err)
+	}
+
+	params := server.Params{
+		Cfg:             cfg,
+		SingleUserToken: "",
+		DBStore:         db,
+		Logger:          logger,
+		ServerID:        serverID,
+		WSAdapter:       p.wsPluginAdapter,
+		NotifyBackends:  []notify.Backend{mentionsBackend},
+	}
+
+	server, err := server.New(params)
 	if err != nil {
 		fmt.Println("ERROR INITIALIZING THE SERVER", err)
 		return err
 	}
 
-	p.wsHub = &WSHub{API: p.API}
-	server.SetWSHub(p.wsHub)
 	p.server = server
 	return server.Start()
 }
 
-func (p *Plugin) OnPluginClusterEvent(_ *plugin.Context, ev model.PluginClusterEvent) {
-	if ev.Id == "websocket_event" {
-		p.wsHub.handleWSMessage(ev.Data)
-	}
+func (p *Plugin) OnWebSocketConnect(webConnID, userID string) {
+	p.wsPluginAdapter.OnWebSocketConnect(webConnID, userID)
+}
+
+func (p *Plugin) OnWebSocketDisconnect(webConnID, userID string) {
+	p.wsPluginAdapter.OnWebSocketDisconnect(webConnID, userID)
+}
+
+func (p *Plugin) WebSocketMessageHasBeenPosted(webConnID, userID string, req *mmModel.WebSocketRequest) {
+	p.wsPluginAdapter.WebSocketMessageHasBeenPosted(webConnID, userID, req)
 }
 
 func (p *Plugin) OnDeactivate() error {
 	return p.server.Shutdown()
+}
+
+func (p *Plugin) OnPluginClusterEvent(_ *plugin.Context, ev mmModel.PluginClusterEvent) {
+	p.wsPluginAdapter.HandleClusterEvent(ev)
 }
 
 // ServeHTTP demonstrates a plugin that handles HTTP requests by greeting the world.
@@ -176,10 +198,8 @@ func defaultLoggingConfig() string {
 	return `
 	{
 		"def": {
-			"type": "console",
-			"options": {
-				"out": "stdout"
-			},
+			"type": "focalboard_plugin_adapter",
+			"options": {},
 			"format": "plain",
 			"format_options": {
 				"delim": " ",

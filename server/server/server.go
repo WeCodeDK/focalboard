@@ -22,7 +22,8 @@ import (
 	"github.com/mattermost/focalboard/server/services/audit"
 	"github.com/mattermost/focalboard/server/services/config"
 	"github.com/mattermost/focalboard/server/services/metrics"
-	"github.com/mattermost/focalboard/server/services/mlog"
+	"github.com/mattermost/focalboard/server/services/notify"
+	"github.com/mattermost/focalboard/server/services/notify/notifylogger"
 	"github.com/mattermost/focalboard/server/services/scheduler"
 	"github.com/mattermost/focalboard/server/services/store"
 	"github.com/mattermost/focalboard/server/services/store/mattermostauthlayer"
@@ -33,8 +34,10 @@ import (
 	"github.com/mattermost/focalboard/server/ws"
 	"github.com/oklog/run"
 
-	"github.com/mattermost/mattermost-server/v5/shared/filestore"
-	"github.com/mattermost/mattermost-server/v5/utils"
+	"github.com/mattermost/mattermost-server/v6/shared/mlog"
+
+	"github.com/mattermost/mattermost-server/v6/shared/filestore"
+	"github.com/mattermost/mattermost-server/v6/utils"
 )
 
 const (
@@ -48,7 +51,7 @@ const (
 
 type Server struct {
 	config                 *config.Configuration
-	wsServer               *ws.Server
+	wsAdapter              ws.Adapter
 	webServer              *web.Server
 	store                  store.Store
 	filesBackend           filestore.FileBackend
@@ -59,40 +62,50 @@ type Server struct {
 	metricsService         *metrics.Metrics
 	metricsUpdaterTask     *scheduler.ScheduledTask
 	auditService           *audit.Audit
+	notificationService    *notify.Service
 	servicesStartStopMutex sync.Mutex
 
 	localRouter     *mux.Router
 	localModeServer *http.Server
 	api             *api.API
+	app             *app.App
 }
 
-func New(cfg *config.Configuration, singleUserToken string, db store.Store, logger *mlog.Logger, serverID string) (*Server, error) {
-	authenticator := auth.New(cfg, db)
+func New(params Params) (*Server, error) {
+	if err := params.CheckValid(); err != nil {
+		return nil, err
+	}
 
-	wsServer := ws.NewServer(authenticator, singleUserToken, cfg.AuthMode == MattermostAuthMod, logger)
+	authenticator := auth.New(params.Cfg, params.DBStore)
+
+	// if no ws adapter is provided, we spin up a websocket server
+	wsAdapter := params.WSAdapter
+	if wsAdapter == nil {
+		wsAdapter = ws.NewServer(authenticator, params.SingleUserToken, params.Cfg.AuthMode == MattermostAuthMod, params.Logger)
+	}
 
 	filesBackendSettings := filestore.FileBackendSettings{}
-	filesBackendSettings.DriverName = cfg.FilesDriver
-	filesBackendSettings.Directory = cfg.FilesPath
-	filesBackendSettings.AmazonS3AccessKeyId = cfg.FilesS3Config.AccessKeyID
-	filesBackendSettings.AmazonS3SecretAccessKey = cfg.FilesS3Config.SecretAccessKey
-	filesBackendSettings.AmazonS3Bucket = cfg.FilesS3Config.Bucket
-	filesBackendSettings.AmazonS3PathPrefix = cfg.FilesS3Config.PathPrefix
-	filesBackendSettings.AmazonS3Region = cfg.FilesS3Config.Region
-	filesBackendSettings.AmazonS3Endpoint = cfg.FilesS3Config.Endpoint
-	filesBackendSettings.AmazonS3SSL = cfg.FilesS3Config.SSL
-	filesBackendSettings.AmazonS3SignV2 = cfg.FilesS3Config.SignV2
-	filesBackendSettings.AmazonS3SSE = cfg.FilesS3Config.SSE
-	filesBackendSettings.AmazonS3Trace = cfg.FilesS3Config.Trace
+	filesBackendSettings.DriverName = params.Cfg.FilesDriver
+	filesBackendSettings.Directory = params.Cfg.FilesPath
+	filesBackendSettings.AmazonS3AccessKeyId = params.Cfg.FilesS3Config.AccessKeyID
+	filesBackendSettings.AmazonS3SecretAccessKey = params.Cfg.FilesS3Config.SecretAccessKey
+	filesBackendSettings.AmazonS3Bucket = params.Cfg.FilesS3Config.Bucket
+	filesBackendSettings.AmazonS3PathPrefix = params.Cfg.FilesS3Config.PathPrefix
+	filesBackendSettings.AmazonS3Region = params.Cfg.FilesS3Config.Region
+	filesBackendSettings.AmazonS3Endpoint = params.Cfg.FilesS3Config.Endpoint
+	filesBackendSettings.AmazonS3SSL = params.Cfg.FilesS3Config.SSL
+	filesBackendSettings.AmazonS3SignV2 = params.Cfg.FilesS3Config.SignV2
+	filesBackendSettings.AmazonS3SSE = params.Cfg.FilesS3Config.SSE
+	filesBackendSettings.AmazonS3Trace = params.Cfg.FilesS3Config.Trace
 
 	filesBackend, appErr := filestore.NewFileBackend(filesBackendSettings)
 	if appErr != nil {
-		logger.Error("Unable to initialize the files storage", mlog.Err(appErr))
+		params.Logger.Error("Unable to initialize the files storage", mlog.Err(appErr))
 
 		return nil, errors.New("unable to initialize the files storage")
 	}
 
-	webhookClient := webhook.NewClient(cfg, logger)
+	webhookClient := webhook.NewClient(params.Cfg, params.Logger)
 
 	// Init metrics
 	instanceInfo := metrics.InstanceInfo{
@@ -104,22 +117,32 @@ func New(cfg *config.Configuration, singleUserToken string, db store.Store, logg
 	metricsService := metrics.NewMetrics(instanceInfo)
 
 	// Init audit
-	auditService := audit.NewAudit()
-	if err2 := auditService.Configure(cfg.AuditCfgFile, cfg.AuditCfgJSON); err2 != nil {
-		return nil, fmt.Errorf("unable to initialize the audit service: %w", err2)
+	auditService, errAudit := audit.NewAudit()
+	if errAudit != nil {
+		return nil, fmt.Errorf("unable to create the audit service: %w", errAudit)
+	}
+	if err := auditService.Configure(params.Cfg.AuditCfgFile, params.Cfg.AuditCfgJSON); err != nil {
+		return nil, fmt.Errorf("unable to initialize the audit service: %w", err)
+	}
+
+	// Init notification services
+	notificationService, errNotify := initNotificationService(params.NotifyBackends, params.Logger)
+	if errNotify != nil {
+		return nil, fmt.Errorf("cannot initialize notification service: %w", errNotify)
 	}
 
 	appServices := app.Services{
-		Auth:         authenticator,
-		Store:        db,
-		FilesBackend: filesBackend,
-		Webhook:      webhookClient,
-		Metrics:      metricsService,
-		Logger:       logger,
+		Auth:          authenticator,
+		Store:         params.DBStore,
+		FilesBackend:  filesBackend,
+		Webhook:       webhookClient,
+		Metrics:       metricsService,
+		Notifications: notificationService,
+		Logger:        params.Logger,
 	}
-	app := app.New(cfg, wsServer, appServices)
+	app := app.New(params.Cfg, wsAdapter, appServices)
 
-	focalboardAPI := api.NewAPI(app, singleUserToken, cfg.AuthMode, logger, auditService)
+	focalboardAPI := api.NewAPI(app, params.SingleUserToken, params.Cfg.AuthMode, params.Logger, auditService)
 
 	// Local router for admin APIs
 	localRouter := mux.NewRouter()
@@ -127,15 +150,19 @@ func New(cfg *config.Configuration, singleUserToken string, db store.Store, logg
 
 	// Init workspace
 	if _, err := app.GetRootWorkspace(); err != nil {
-		logger.Error("Unable to get root workspace", mlog.Err(err))
+		params.Logger.Error("Unable to get root workspace", mlog.Err(err))
 		return nil, err
 	}
 
-	webServer := web.NewServer(cfg.WebPath, cfg.ServerRoot, cfg.Port, cfg.UseSSL, cfg.LocalOnly, logger)
-	webServer.AddRoutes(wsServer)
+	webServer := web.NewServer(params.Cfg.WebPath, params.Cfg.ServerRoot, params.Cfg.Port,
+		params.Cfg.UseSSL, params.Cfg.LocalOnly, params.Logger)
+	// if the adapter is a routed service, register it before the API
+	if routedService, ok := wsAdapter.(web.RoutedService); ok {
+		webServer.AddRoutes(routedService)
+	}
 	webServer.AddRoutes(focalboardAPI)
 
-	settings, err := db.GetSystemSettings()
+	settings, err := params.DBStore.GetSystemSettings()
 	if err != nil {
 		return nil, err
 	}
@@ -144,33 +171,35 @@ func New(cfg *config.Configuration, singleUserToken string, db store.Store, logg
 	telemetryID := settings["TelemetryID"]
 	if len(telemetryID) == 0 {
 		telemetryID = uuid.New().String()
-		if err = db.SetSystemSetting("TelemetryID", uuid.New().String()); err != nil {
+		if err = params.DBStore.SetSystemSetting("TelemetryID", uuid.New().String()); err != nil {
 			return nil, err
 		}
 	}
 	telemetryOpts := telemetryOptions{
 		app:         app,
-		cfg:         cfg,
+		cfg:         params.Cfg,
 		telemetryID: telemetryID,
-		serverID:    serverID,
-		logger:      logger,
-		singleUser:  len(singleUserToken) > 0,
+		serverID:    params.ServerID,
+		logger:      params.Logger,
+		singleUser:  len(params.SingleUserToken) > 0,
 	}
 	telemetryService := initTelemetry(telemetryOpts)
 
 	server := Server{
-		config:         cfg,
-		wsServer:       wsServer,
-		webServer:      webServer,
-		store:          db,
-		filesBackend:   filesBackend,
-		telemetry:      telemetryService,
-		metricsServer:  metrics.NewMetricsServer(cfg.PrometheusAddress, metricsService, logger),
-		metricsService: metricsService,
-		auditService:   auditService,
-		logger:         logger,
-		localRouter:    localRouter,
-		api:            focalboardAPI,
+		config:              params.Cfg,
+		wsAdapter:           wsAdapter,
+		webServer:           webServer,
+		store:               params.DBStore,
+		filesBackend:        filesBackend,
+		telemetry:           telemetryService,
+		metricsServer:       metrics.NewMetricsServer(params.Cfg.PrometheusAddress, metricsService, params.Logger),
+		metricsService:      metricsService,
+		auditService:        auditService,
+		notificationService: notificationService,
+		logger:              params.Logger,
+		localRouter:         localRouter,
+		api:                 focalboardAPI,
+		app:                 app,
 	}
 
 	server.initHandlers()
@@ -192,7 +221,7 @@ func NewStore(config *config.Configuration, logger *mlog.Logger) (store.Store, e
 	}
 
 	var db store.Store
-	db, err = sqlstore.New(config.DBType, config.DBConfigString, config.DBTablePrefix, logger, sqlDB)
+	db, err = sqlstore.New(config.DBType, config.DBConfigString, config.DBTablePrefix, logger, sqlDB, false)
 	if err != nil {
 		return nil, err
 	}
@@ -220,16 +249,18 @@ func (s *Server) Start() error {
 		}
 	}
 
-	s.cleanUpSessionsTask = scheduler.CreateRecurringTask("cleanUpSessions", func() {
-		secondsAgo := minSessionExpiryTime
-		if secondsAgo < s.config.SessionExpireTime {
-			secondsAgo = s.config.SessionExpireTime
-		}
+	if s.config.AuthMode != MattermostAuthMod {
+		s.cleanUpSessionsTask = scheduler.CreateRecurringTask("cleanUpSessions", func() {
+			secondsAgo := minSessionExpiryTime
+			if secondsAgo < s.config.SessionExpireTime {
+				secondsAgo = s.config.SessionExpireTime
+			}
 
-		if err := s.store.CleanUpSessions(secondsAgo); err != nil {
-			s.logger.Error("Unable to clean up the sessions", mlog.Err(err))
-		}
-	}, cleanupSessionTaskFrequency)
+			if err := s.store.CleanUpSessions(secondsAgo); err != nil {
+				s.logger.Error("Unable to clean up the sessions", mlog.Err(err))
+			}
+		}, cleanupSessionTaskFrequency)
+	}
 
 	metricsUpdater := func() {
 		blockCounts, err := s.store.GetBlockCountsByType()
@@ -237,7 +268,7 @@ func (s *Server) Start() error {
 			s.logger.Error("Error updating metrics", mlog.String("group", "blocks"), mlog.Err(err))
 			return
 		}
-		s.logger.Log(mlog.Metrics, "Block metrics collected", mlog.Map("block_counts", blockCounts))
+		s.logger.Log(mlog.LvlFBMetrics, "Block metrics collected", mlog.Map("block_counts", blockCounts))
 		for blockType, count := range blockCounts {
 			s.metricsService.ObserveBlockCount(blockType, count)
 		}
@@ -246,7 +277,7 @@ func (s *Server) Start() error {
 			s.logger.Error("Error updating metrics", mlog.String("group", "workspaces"), mlog.Err(err))
 			return
 		}
-		s.logger.Log(mlog.Metrics, "Workspace metrics collected", mlog.Int64("workspace_count", workspaceCount))
+		s.logger.Log(mlog.LvlFBMetrics, "Workspace metrics collected", mlog.Int64("workspace_count", workspaceCount))
 		s.metricsService.ObserveWorkspaceCount(workspaceCount)
 	}
 	// metricsUpdater()   Calling this immediately causes integration unit tests to fail.
@@ -301,6 +332,10 @@ func (s *Server) Shutdown() error {
 		s.logger.Warn("Error occurred when shutting down audit service", mlog.Err(err))
 	}
 
+	if err := s.notificationService.Shutdown(); err != nil {
+		s.logger.Warn("Error occurred when shutting down notification service", mlog.Err(err))
+	}
+
 	defer s.logger.Info("Server.Shutdown")
 
 	return s.store.Shutdown()
@@ -312,6 +347,23 @@ func (s *Server) Config() *config.Configuration {
 
 func (s *Server) Logger() *mlog.Logger {
 	return s.logger
+}
+
+func (s *Server) App() *app.App {
+	return s.app
+}
+
+func (s *Server) UpdateClientConfig(pluginConfig map[string]interface{}) {
+	for index, value := range pluginConfig {
+		if index == "EnablePublicSharedBoards" {
+			b, ok := value.(bool)
+			if !ok {
+				s.logger.Warn("Invalid value for config value", mlog.String(index, value.(string)))
+			}
+			s.config.EnablePublicSharedBoards = b
+		}
+	}
+	s.app.SetConfig(s.config)
 }
 
 // Local server
@@ -356,10 +408,6 @@ func (s *Server) stopLocalModeServer() {
 
 func (s *Server) GetRootRouter() *mux.Router {
 	return s.webServer.Router()
-}
-
-func (s *Server) SetWSHub(hub ws.Hub) {
-	s.wsServer.SetHub(hub)
 }
 
 type telemetryOptions struct {
@@ -440,4 +488,13 @@ func initTelemetry(opts telemetryOptions) *telemetry.Service {
 		return m, nil
 	})
 	return telemetryService
+}
+
+func initNotificationService(backends []notify.Backend, logger *mlog.Logger) (*notify.Service, error) {
+	loggerBackend := notifylogger.New(logger, mlog.LvlDebug)
+
+	backends = append(backends, loggerBackend)
+
+	service, err := notify.New(logger, backends...)
+	return service, err
 }

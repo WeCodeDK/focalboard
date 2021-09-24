@@ -3,6 +3,12 @@
 import marked from 'marked'
 import {IntlShape} from 'react-intl'
 
+import {Block} from './blocks/block'
+import {createBoard} from './blocks/board'
+import {createBoardView} from './blocks/boardView'
+import {createCard} from './blocks/card'
+import {createCommentBlock} from './blocks/commentBlock'
+
 declare global {
     interface Window {
         msCrypto: Crypto
@@ -151,7 +157,7 @@ class Utils {
                 'rel="noreferrer" ' +
                 `href="${encodeURI(href || '')}" ` +
                 `title="${title ? encodeURI(title) : ''}" ` +
-                ((window as any).openInNewBrowser ? 'onclick="event.stopPropagation(); openInNewBrowser && openInNewBrowser(event.target.href);"' : '') +
+                `onclick="event.stopPropagation();${((window as any).openInNewBrowser ? ' openInNewBrowser && openInNewBrowser(event.target.href);' : '')}"` +
             '>' + contents + '</a>'
         }
         const html = marked(text.replace(/</g, '&lt;'), {renderer, breaks: true})
@@ -241,6 +247,11 @@ class Utils {
     // favicon
 
     static setFavicon(icon?: string): void {
+        if (Utils.isFocalboardPlugin()) {
+            // Do not change the icon from focalboard plugin
+            return
+        }
+
         if (!icon) {
             document.querySelector("link[rel*='icon']")?.remove()
             return
@@ -415,6 +426,74 @@ class Utils {
 
     static isFocalboardPlugin(): boolean {
         return Boolean((window as any).isFocalboardPlugin)
+    }
+
+    static fixBlock(block: Block): Block {
+        switch (block.type) {
+        case 'board':
+            return createBoard(block)
+        case 'view':
+            return createBoardView(block)
+        case 'card':
+            return createCard(block)
+        case 'comment':
+            return createCommentBlock(block)
+        default:
+            return block
+        }
+    }
+
+    static userAgent(): string {
+        return window.navigator.userAgent
+    }
+
+    static isDesktopApp(): boolean {
+        return Utils.userAgent().indexOf('Mattermost') !== -1 && Utils.userAgent().indexOf('Electron') !== -1
+    }
+
+    static getDesktopVersion(): string {
+        // use if the value window.desktop.version is not set yet
+        const regex = /Mattermost\/(\d+\.\d+\.\d+)/gm
+        const match = regex.exec(window.navigator.appVersion)?.[1] || ''
+        return match
+    }
+
+    /**
+     * Boolean function to check if a version is greater than another.
+     *
+     * currentVersionParam: The version being checked
+     * compareVersionParam: The version to compare the former version against
+     *
+     * eg.  currentVersionParam = 4.16.0, compareVersionParam = 4.17.0 returns false
+     *      currentVersionParam = 4.16.1, compareVersionParam = 4.16.1 returns true
+     */
+    static isVersionGreaterThanOrEqualTo(currentVersionParam: string, compareVersionParam: string): boolean {
+        if (currentVersionParam === compareVersionParam) {
+            return true
+        }
+
+        // We only care about the numbers
+        const currentVersionNumber = (currentVersionParam || '').split('.').filter((x) => (/^[0-9]+$/).exec(x) !== null)
+        const compareVersionNumber = (compareVersionParam || '').split('.').filter((x) => (/^[0-9]+$/).exec(x) !== null)
+
+        for (let i = 0; i < Math.max(currentVersionNumber.length, compareVersionNumber.length); i++) {
+            const currentVersion = parseInt(currentVersionNumber[i], 10) || 0
+            const compareVersion = parseInt(compareVersionNumber[i], 10) || 0
+            if (currentVersion > compareVersion) {
+                return true
+            }
+
+            if (currentVersion < compareVersion) {
+                return false
+            }
+        }
+
+        // If all components are equal, then return true
+        return true
+    }
+
+    static isDesktop(): boolean {
+        return Utils.isDesktopApp() && Utils.isVersionGreaterThanOrEqualTo(Utils.getDesktopVersion(), '5.0.0')
     }
 }
 
