@@ -16,13 +16,13 @@ import {getSortedViews} from '../../store/views'
 import {getCurrentWorkspace} from '../../store/workspace'
 import {useAppSelector} from '../../store/hooks'
 import {Utils} from '../../utils'
+import Client from '../client'
 
 import './sidebar.scss'
 
 import WorkspaceSwitcher from '../workspaceSwitcher/workspaceSwitcher'
 
 import SidebarAddBoardMenu from './sidebarAddBoardMenu'
-import SidebarBoardItem from './sidebarBoardItem'
 import SidebarSettingsMenu from './sidebarSettingsMenu'
 import SidebarUserMenu from './sidebarUserMenu'
 
@@ -122,23 +122,17 @@ const Sidebar = React.memo((props: Props) => {
             }
 
             {
+
+                // Convert to following to multiple clients
                 !props.isDashboard &&
                 <div className='octo-sidebar-list'>
-                    {
-                        boards.map((board) => {
-                            const nextBoardId = boards.length > 1 ? boards.find((o) => o.id !== board.id)?.id : undefined
-                            return (
-                                <SidebarBoardItem
-                                    key={board.id}
-                                    views={views}
-                                    board={board}
-                                    activeBoardId={props.activeBoardId}
-                                    activeViewId={props.activeViewId}
-                                    nextBoardId={board.id === props.activeBoardId ? nextBoardId : undefined}
-                                />
-                            )
-                        })
-                    }
+                    <Client
+                        name={'Test'}
+                        boards={boards}
+                        views={views}
+                        activeBoardId={props.activeBoardId}
+                        activeViewId={props.activeViewId}
+                    />
                 </div>
             }
 
